@@ -49,6 +49,18 @@ CREATE TABLE IF NOT EXISTS forecasts (
 );
 CREATE INDEX IF NOT EXISTS idx_forecasts_hub_ts ON forecasts(hub, ts);
 
+-- Price exposure per account/hub snapshot
+CREATE TABLE IF NOT EXISTS price_exposure (
+    ts TEXT NOT NULL,
+    account TEXT NOT NULL,
+    hub TEXT NOT NULL,
+    position_mw INT NOT NULL,
+    last_price_mwh DOUBLE PRECISION NOT NULL,
+    pnl01 DOUBLE PRECISION NOT NULL,           -- $ PnL for $1 move
+    notional_usd DOUBLE PRECISION NOT NULL     -- position_mw * last_price_mwh
+);
+CREATE INDEX IF NOT EXISTS idx_price_exposure_account_hub_ts ON price_exposure(account, hub, ts);
+
 -- Index and grants for legacy table
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 GRANT ALL PRIVILEGES ON TABLE events TO postgres;
@@ -56,3 +68,4 @@ GRANT ALL PRIVILEGES ON TABLE prices TO postgres;
 GRANT ALL PRIVILEGES ON TABLE trades TO postgres;
 GRANT ALL PRIVILEGES ON TABLE positions_pnl TO postgres;
 GRANT ALL PRIVILEGES ON TABLE forecasts TO postgres;
+GRANT ALL PRIVILEGES ON TABLE price_exposure TO postgres;

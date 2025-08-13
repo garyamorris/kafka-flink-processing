@@ -7,6 +7,7 @@ A trading-centric streaming PoC that simulates energy hub price ticks and trades
 - Kafka: Streams two topics — `prices` ($/MWh) and `trades` (MW fills)
 - Flink: Stateful job that persists raw streams, computes SMA forecasts, and emits `positions_pnl`
 - Postgres: Stores `prices`, `trades`, `forecasts`, and `positions_pnl`
+ - Postgres: Stores `prices`, `trades`, `forecasts`, `positions_pnl`, and `price_exposure`
 - Python Producer: Generates diurnal energy price shapes and random trades across hubs/accounts
 
 ## Prerequisites
@@ -54,6 +55,7 @@ The compose file builds and submits the Flink job automatically once Kafka/Postg
 - `trades(trade_id BIGINT, ts TEXT, account TEXT, hub TEXT, side TEXT, mw INT, price_mwh DOUBLE PRECISION)`
 - `forecasts(ts TEXT, hub TEXT, sma5 DOUBLE PRECISION, sma20 DOUBLE PRECISION, forecast_next DOUBLE PRECISION)`
 - `positions_pnl(ts TEXT, account TEXT, hub TEXT, position_mw INT, avg_price_mwh DOUBLE PRECISION, last_price_mwh DOUBLE PRECISION, realized_pnl DOUBLE PRECISION, unrealized_pnl DOUBLE PRECISION, total_pnl DOUBLE PRECISION)`
+ - `price_exposure(ts TEXT, account TEXT, hub TEXT, position_mw INT, last_price_mwh DOUBLE PRECISION, pnl01 DOUBLE PRECISION, notional_usd DOUBLE PRECISION)`
 
 Note: timestamps are stored as TEXT for simplicity. We can switch to `TIMESTAMPTZ` if needed.
 
@@ -65,7 +67,8 @@ Note: timestamps are stored as TEXT for simplicity. We can switch to `TIMESTAMPT
 - Flink job (`KafkaToPostgresJob`):
   - Persists raw `prices`/`trades` to Postgres
   - Forecasts: SMA(5/20) per hub on `price_mwh`, writes to `forecasts`
-  - PnL: Maintains per-account position (MW) and avg price ($/MWh) keyed by hub; emits `positions_pnl` on every price or trade
+- PnL: Maintains per-account position (MW) and avg price ($/MWh) keyed by hub; emits `positions_pnl` on every price or trade
+ - Exposure: Derives `price_exposure` per account/hub with `pnl01 = position_mw` and `notional_usd = position_mw * last_price_mwh`
 
 ## Inspecting Data
 
@@ -100,6 +103,11 @@ SELECT *
 FROM forecasts
 ORDER BY ts DESC, hub
 LIMIT 8;
+
+-- Price exposure (pnl01 and notional)
+SELECT DISTINCT ON (account, hub) ts, account, hub, position_mw, last_price_mwh, pnl01, notional_usd
+FROM price_exposure
+ORDER BY account, hub, ts DESC;
 ```
 
 Kafka tools:
@@ -149,4 +157,3 @@ README.md
 - Add block trades with delivery windows and hourly settlement PnL
 - Basis and spread PnL between hubs
 - Strategy-driven trades (e.g., SMA crossovers) instead of random
-

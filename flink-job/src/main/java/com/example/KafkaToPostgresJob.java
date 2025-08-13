@@ -7,6 +7,7 @@ import org.apache.flink.api.common.serialization.AbstractDeserializationSchema;
 import org.apache.flink.api.common.state.*;
 import org.apache.flink.api.common.typeinfo.TypeHint;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.connector.jdbc.JdbcConnectionOptions;
 import org.apache.flink.connector.jdbc.JdbcExecutionOptions;
 import org.apache.flink.connector.jdbc.JdbcSink;
@@ -129,6 +130,34 @@ public class KafkaToPostgresJob {
                     ps.setDouble(9, r.totalPnl);
                 }, execOpts, connOpts)).name("positions-pnl-sink");
 
+        // Derive price exposure per account/hub from PnL snapshots
+        DataStream<ExposureRecord> exposure = pnl.map(new MapFunction<PnlRecord, ExposureRecord>() {
+            @Override
+            public ExposureRecord map(PnlRecord r) {
+                ExposureRecord e = new ExposureRecord();
+                e.ts = r.ts;
+                e.account = r.account;
+                e.hub = r.hub;
+                e.positionMw = r.positionMw;
+                e.lastPriceMwh = r.lastPriceMwh;
+                e.pnl01 = r.positionMw; // $ PnL for a $1 move
+                e.notionalUsd = r.positionMw * r.lastPriceMwh;
+                return e;
+            }
+        });
+
+        exposure.addSink(JdbcSink.sink(
+                "INSERT INTO price_exposure (ts, account, hub, position_mw, last_price_mwh, pnl01, notional_usd) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (JdbcStatementBuilder<ExposureRecord>) (ps, e) -> {
+                    ps.setString(1, e.ts);
+                    ps.setString(2, e.account);
+                    ps.setString(3, e.hub);
+                    ps.setInt(4, e.positionMw);
+                    ps.setDouble(5, e.lastPriceMwh);
+                    ps.setDouble(6, e.pnl01);
+                    ps.setDouble(7, e.notionalUsd);
+                }, execOpts, connOpts)).name("price-exposure-sink");
+
         env.execute("Trading PnL and Forecasts Job");
     }
 
@@ -167,6 +196,16 @@ public class KafkaToPostgresJob {
         public double realizedPnl;
         public double unrealizedPnl;
         public double totalPnl;
+    }
+
+    public static class ExposureRecord {
+        public String ts;
+        public String account;
+        public String hub;
+        public int positionMw;
+        public double lastPriceMwh;
+        public double pnl01;
+        public double notionalUsd;
     }
 
     public static class PositionAccumulator {
