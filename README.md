@@ -64,15 +64,15 @@ Note: timestamps are stored as TEXT for simplicity. We can switch to `TIMESTAMPT
 - Producer (`producer/producer.py`):
   - Hubs: PJM-WEST, ERCOT-HOUSTON, NYISO-ZONEJ, CAISO-NP15
   - Simulates diurnal price patterns plus noise; emits `prices` and random `trades`
-- Flink job (`KafkaToPostgresJob`):
-  - Persists raw `prices`/`trades` to Postgres
-  - Forecasts: SMA(5/20) per hub on `price_mwh`, writes to `forecasts`
-- PnL: Maintains per-account position (MW) and avg price ($/MWh) keyed by hub; emits `positions_pnl` on every price or trade
+- Flink jobs (separate pipelines):
+  - `IngestPricesAndTradesJob`: persists raw `prices` and `trades` into Postgres
+  - `ForecastsJob`: computes SMA(5/20) per hub and writes to `forecasts`
+  - `PnlAndExposureJob`: maintains per-account positions and emits `positions_pnl` and `price_exposure`
  - Exposure: Derives `price_exposure` per account/hub with `pnl01 = position_mw` and `notional_usd = position_mw * last_price_mwh`
 
 ## Inspecting Data
 
-Open the Flink UI at http://localhost:8081 to view job status, throughput, and operators.
+Open the Flink UI at http://localhost:8081 to view the three running jobs, their operators, and throughput.
 
 Query Postgres (inside the compose stack):
 ```bash

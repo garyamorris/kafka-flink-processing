@@ -41,21 +41,21 @@ for i in $(seq 1 $MAX_RETRIES); do
     sleep $RETRY_INTERVAL
 done
 
-# Submit the Flink job
-echo "Submitting Flink job..."
-/opt/flink/bin/flink run \
-    --jobmanager jobmanager:8081 \
-    --class com.example.KafkaToPostgresJob \
-    /opt/flink/job.jar
+echo "Submitting Flink jobs (ingest, forecasts, pnl/exposure)..."
 
-if [ $? -eq 0 ]; then
-    echo "Job submitted successfully!"
-    echo "Check the Flink dashboard at http://localhost:8081"
-else
-    echo "Failed to submit job!"
-    exit 1
-fi
+set -e
+
+/opt/flink/bin/flink run --jobmanager jobmanager:8081 \
+    --class com.example.IngestPricesAndTradesJob /opt/flink/job.jar
+
+/opt/flink/bin/flink run --jobmanager jobmanager:8081 \
+    --class com.example.ForecastsJob /opt/flink/job.jar
+
+/opt/flink/bin/flink run --jobmanager jobmanager:8081 \
+    --class com.example.PnlAndExposureJob /opt/flink/job.jar
+
+echo "Jobs submitted. Check the Flink dashboard at http://localhost:8081"
 
 # Keep container running to show logs
-echo "Job submitted. Container will stay alive for monitoring..."
+echo "Jobs submitted. Container will stay alive for monitoring..."
 tail -f /dev/null
