@@ -1,31 +1,24 @@
 # Energy Trading Streaming (Kafka + Flink + Postgres)
 
-A trading-centric streaming PoC that simulates energy hub price ticks and trades, then calculates per-account PnL and simple price forecasts in real time with Apache Flink. All services run via Docker Compose.
+This PoC simulates energy hub price streams and trades, then computes forecasts, PnL, and exposure in real time. It now uses TIMESTAMPTZ timestamps, adds Schema Registry, and includes day‑ahead vs real‑time LMP publishers.
 
 ## Architecture
 
-- Kafka: Streams two topics — `prices` ($/MWh) and `trades` (MW fills)
-- Flink: Stateful job that persists raw streams, computes SMA forecasts, and emits `positions_pnl`
-- Postgres: Stores `prices`, `trades`, `forecasts`, and `positions_pnl`
- - Postgres: Stores `prices`, `trades`, `forecasts`, `positions_pnl`, and `price_exposure`
-- Python Producer: Generates diurnal energy price shapes and random trades across hubs/accounts
-
-## Prerequisites
-
-- Docker and Docker Compose
-- ~4 GB RAM available
+- Kafka: Topics `prices`, `trades`, `dayahead_prices`, `realtime_prices`
+- Schema Registry: Confluent Schema Registry (ready for Avro/Protobuf)
+- Flink jobs: Ingestion, forecasts, PnL/exposure (separate pipelines)
+- Postgres: Stores prices, trades, forecasts, PnL, exposure, and DA/RT LMPs
+- Python producers: Random‑walk spot prices/trades and DA/RT LMP component publishers
 
 ## Quick Start
 
 ```bash
-# Start everything
 docker compose up --build
-
-# Flink UI
-# http://localhost:8081
+# Flink UI: http://localhost:8081
+# Schema Registry: http://localhost:8082
 ```
 
-The compose file builds and submits the Flink job automatically once Kafka/Postgres/Flink are ready. The Python producer then streams price ticks every ~200ms and occasional trades.
+The submitter container waits for the cluster and submits all jobs. Producers start streaming once Kafka is reachable.
 
 ## Data Model
 
@@ -33,48 +26,56 @@ The compose file builds and submits the Flink job automatically once Kafka/Postg
 
 `prices`
 ```json
-{ "ts": "2024-01-15T10:30:45.123Z", "hub": "PJM-WEST", "price_mwh": 47.12 }
+{ "ts": "2024-01-15T10:30:45Z", "hub": "PJM-WEST", "price_mwh": 47.12 }
 ```
 
 `trades`
 ```json
-{
-  "trade_id": 123,
-  "ts": "2024-01-15T10:30:45.123Z",
-  "account": "ACC1",
-  "hub": "PJM-WEST",
-  "side": "BUY",
-  "mw": 25,
-  "price_mwh": 46.95
-}
+{ "trade_id": 123, "ts": "2024-01-15T10:30:45Z", "account": "ACC1", "hub": "PJM-WEST", "side": "BUY", "mw": 25, "price_mwh": 46.95 }
 ```
 
-### Postgres tables
+`dayahead_prices`
+```json
+{ "ts": "2024-01-15T10:30:45Z", "hub": "PJM-WEST", "lmp_da": 43.1, "energy_da": 40.7, "congestion_da": 1.8, "loss_da": 0.6 }
+```
 
-- `prices(ts TEXT, hub TEXT, price_mwh DOUBLE PRECISION)`
-- `trades(trade_id BIGINT, ts TEXT, account TEXT, hub TEXT, side TEXT, mw INT, price_mwh DOUBLE PRECISION)`
-- `forecasts(ts TEXT, hub TEXT, sma5 DOUBLE PRECISION, sma20 DOUBLE PRECISION, forecast_next DOUBLE PRECISION)`
-- `positions_pnl(ts TEXT, account TEXT, hub TEXT, position_mw INT, avg_price_mwh DOUBLE PRECISION, last_price_mwh DOUBLE PRECISION, realized_pnl DOUBLE PRECISION, unrealized_pnl DOUBLE PRECISION, total_pnl DOUBLE PRECISION)`
- - `price_exposure(ts TEXT, account TEXT, hub TEXT, position_mw INT, last_price_mwh DOUBLE PRECISION, pnl01 DOUBLE PRECISION, notional_usd DOUBLE PRECISION)`
+`realtime_prices`
+```json
+{ "ts": "2024-01-15T10:30:46Z", "hub": "PJM-WEST", "lmp_rt": 45.8, "energy_rt": 42.3, "congestion_rt": 2.9, "loss_rt": 0.6 }
+```
 
-Note: timestamps are stored as TEXT for simplicity. We can switch to `TIMESTAMPTZ` if needed.
+### Postgres tables (TIMESTAMPTZ)
+
+- `prices(ts TIMESTAMPTZ, hub TEXT, price_mwh DOUBLE PRECISION)`
+- `trades(trade_id BIGINT, ts TIMESTAMPTZ, account TEXT, hub TEXT, side TEXT, mw INT, price_mwh DOUBLE PRECISION)`
+- `forecasts(ts TIMESTAMPTZ, hub TEXT, sma5 DOUBLE PRECISION, sma20 DOUBLE PRECISION, forecast_next DOUBLE PRECISION)`
+- `positions_pnl(ts TIMESTAMPTZ, account TEXT, hub TEXT, position_mw INT, avg_price_mwh DOUBLE PRECISION, last_price_mwh DOUBLE PRECISION, realized_pnl DOUBLE PRECISION, unrealized_pnl DOUBLE PRECISION, total_pnl DOUBLE PRECISION)`
+- `price_exposure(ts TIMESTAMPTZ, account TEXT, hub TEXT, position_mw INT, last_price_mwh DOUBLE PRECISION, pnl01 DOUBLE PRECISION, notional_usd DOUBLE PRECISION)`
+- `dayahead_prices(ts TIMESTAMPTZ, hub TEXT, lmp_da DOUBLE PRECISION, energy_da DOUBLE PRECISION, congestion_da DOUBLE PRECISION, loss_da DOUBLE PRECISION)`
+- `realtime_prices(ts TIMESTAMPTZ, hub TEXT, lmp_rt DOUBLE PRECISION, energy_rt DOUBLE PRECISION, congestion_rt DOUBLE PRECISION, loss_rt DOUBLE PRECISION)`
+
+All timestamps are `TIMESTAMPTZ` and serialized as ISO‑8601 (UTC) strings.
 
 ## How It Works
 
 - Producer (`producer/producer.py`):
   - Hubs: PJM-WEST, ERCOT-HOUSTON, NYISO-ZONEJ, CAISO-NP15
   - Simulates diurnal price patterns plus noise; emits `prices` and random `trades`
-- Flink jobs (separate pipelines):
+- Producer (`producer-da-rt/producer_da_rt.py`):
+  - Emits DA LMP components (energy, congestion, loss) every ~10s and RT components every ~1s
+  - Topics: `dayahead_prices`, `realtime_prices`
+- Flink jobs:
   - `IngestPricesAndTradesJob`: persists raw `prices` and `trades` into Postgres
   - `ForecastsJob`: computes SMA(5/20) per hub and writes to `forecasts`
   - `PnlAndExposureJob`: maintains per-account positions and emits `positions_pnl` and `price_exposure`
- - Exposure: Derives `price_exposure` per account/hub with `pnl01 = position_mw` and `notional_usd = position_mw * last_price_mwh`
+  - `IngestDayAheadAndRealTimeJob`: persists `dayahead_prices` and `realtime_prices`
 
 ## Inspecting Data
 
-Open the Flink UI at http://localhost:8081 to view the three running jobs, their operators, and throughput.
+- Flink UI: http://localhost:8081 — see all running jobs
+- Schema Registry: http://localhost:8082 (currently unused by producers, ready for Avro/Protobuf)
 
-Query Postgres (inside the compose stack):
+Postgres shell:
 ```bash
 docker compose exec -u postgres postgres psql -U postgres -d flinkdb
 ```
@@ -82,48 +83,34 @@ docker compose exec -u postgres postgres psql -U postgres -d flinkdb
 Sample SQL:
 ```sql
 -- Latest prices by hub
-SELECT *
-FROM prices
-ORDER BY ts DESC
-LIMIT 8;
+SELECT * FROM prices ORDER BY ts DESC LIMIT 8;
 
 -- Recent trades
-SELECT *
-FROM trades
-ORDER BY ts DESC
-LIMIT 10;
+SELECT * FROM trades ORDER BY ts DESC LIMIT 10;
 
 -- Most recent PnL snapshot per account/hub
-SELECT DISTINCT ON (account, hub) *
-FROM positions_pnl
-ORDER BY account, hub, ts DESC;
+SELECT DISTINCT ON (account, hub) * FROM positions_pnl ORDER BY account, hub, ts DESC;
 
--- Forecast signals
-SELECT *
-FROM forecasts
-ORDER BY ts DESC, hub
-LIMIT 8;
-
--- Price exposure (pnl01 and notional)
+-- Exposure (pnl01 and notional)
 SELECT DISTINCT ON (account, hub) ts, account, hub, position_mw, last_price_mwh, pnl01, notional_usd
-FROM price_exposure
-ORDER BY account, hub, ts DESC;
+FROM price_exposure ORDER BY account, hub, ts DESC;
+
+-- DA vs RT last values
+SELECT * FROM dayahead_prices ORDER BY ts DESC LIMIT 8;
+SELECT * FROM realtime_prices ORDER BY ts DESC LIMIT 8;
 ```
 
 Kafka tools:
 ```bash
-# Producer logs
-docker compose logs -f producer
-
-# List topics from inside the Kafka container
+docker compose logs -f producer producer-da-rt
 docker compose exec kafka kafka-topics --list --bootstrap-server kafka:29092
 ```
 
 ## Configuration
 
-- Producer pacing: edit `time.sleep(0.2)` in `producer/producer.py`
-- Flink parallelism/task slots: see `docker-compose.yml` under `taskmanager` environment
-- JDBC batch sizes: `KafkaToPostgresJob.java` (JdbcExecutionOptions)
+- Producer pacing: `time.sleep()` in producers
+- Flink parallelism/task slots: see `docker-compose.yml` under `taskmanager`
+- JDBC batch sizes: see each job’s `JdbcExecutionOptions`
 
 ## Project Structure
 
@@ -133,10 +120,19 @@ producer/
   Dockerfile
   producer.py
   requirements.txt
+producer-da-rt/
+  Dockerfile
+  producer_da_rt.py
+  requirements.txt
 flink-job/
   Dockerfile
   pom.xml
-  src/main/java/com/example/KafkaToPostgresJob.java
+  src/main/java/com/example/
+    KafkaToPostgresJob.java
+    IngestPricesAndTradesJob.java
+    IngestDayAheadAndRealTimeJob.java
+    ForecastsJob.java
+    PnlAndExposureJob.java
 postgres/
   init.sql
 scripts/
@@ -145,15 +141,7 @@ scripts/
 README.md
 ```
 
-## Troubleshooting
+## Notes
 
-- Flink job not visible: wait for JobManager/TaskManager to register; check `docker compose logs flink-job-submitter`
-- No data in Postgres: check `docker compose logs producer` and Flink UI; confirm topics exist
-- Kafka CLI inside container: use `kafka:29092` as the bootstrap server
-
-## Next Ideas
-
-- Use `TIMESTAMPTZ` and event time/watermarks
-- Add block trades with delivery windows and hourly settlement PnL
-- Basis and spread PnL between hubs
-- Strategy-driven trades (e.g., SMA crossovers) instead of random
+- Existing deployments may need migration to TIMESTAMPTZ; the provided init script defines new tables for fresh runs.
+- Schema Registry is included but producers currently publish JSON. Next step is to switch to Avro/Protobuf with subject‑version governance.

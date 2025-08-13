@@ -54,6 +54,9 @@ set -e
 /opt/flink/bin/flink run --jobmanager jobmanager:8081 \
     --class com.example.PnlAndExposureJob /opt/flink/job.jar
 
+/opt/flink/bin/flink run --jobmanager jobmanager:8081 \
+    --class com.example.IngestDayAheadAndRealTimeJob /opt/flink/job.jar
+
 echo "Jobs submitted. Check the Flink dashboard at http://localhost:8081"
 
 # Keep container running to show logs

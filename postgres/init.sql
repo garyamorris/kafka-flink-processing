@@ -2,7 +2,7 @@
 -- Base demo table (kept for backwards compatibility)
 CREATE TABLE IF NOT EXISTS events (
     id INT PRIMARY KEY,
-    ts TEXT NOT NULL,
+    ts TIMESTAMPTZ NOT NULL,
     value DOUBLE PRECISION NOT NULL
 );
 
@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS events (
 
 -- Price ticks per hub ($/MWh)
 CREATE TABLE IF NOT EXISTS prices (
-    ts TEXT NOT NULL,
+    ts TIMESTAMPTZ NOT NULL,
     hub TEXT NOT NULL,
     price_mwh DOUBLE PRECISION NOT NULL
 );
@@ -18,7 +18,7 @@ CREATE INDEX IF NOT EXISTS idx_prices_hub_ts ON prices(hub, ts);
 
 CREATE TABLE IF NOT EXISTS trades (
     trade_id BIGINT PRIMARY KEY,
-    ts TEXT NOT NULL,
+    ts TIMESTAMPTZ NOT NULL,
     account TEXT NOT NULL,
     hub TEXT NOT NULL,
     side TEXT NOT NULL,   -- BUY or SELL
@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS trades (
 CREATE INDEX IF NOT EXISTS idx_trades_account_hub_ts ON trades(account, hub, ts);
 
 CREATE TABLE IF NOT EXISTS positions_pnl (
-    ts TEXT NOT NULL,
+    ts TIMESTAMPTZ NOT NULL,
     account TEXT NOT NULL,
     hub TEXT NOT NULL,
     position_mw INT NOT NULL,
@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS positions_pnl (
 CREATE INDEX IF NOT EXISTS idx_positions_pnl_account_hub_ts ON positions_pnl(account, hub, ts);
 
 CREATE TABLE IF NOT EXISTS forecasts (
-    ts TEXT NOT NULL,
+    ts TIMESTAMPTZ NOT NULL,
     hub TEXT NOT NULL,
     sma5 DOUBLE PRECISION,
     sma20 DOUBLE PRECISION,
@@ -51,7 +51,7 @@ CREATE INDEX IF NOT EXISTS idx_forecasts_hub_ts ON forecasts(hub, ts);
 
 -- Price exposure per account/hub snapshot
 CREATE TABLE IF NOT EXISTS price_exposure (
-    ts TEXT NOT NULL,
+    ts TIMESTAMPTZ NOT NULL,
     account TEXT NOT NULL,
     hub TEXT NOT NULL,
     position_mw INT NOT NULL,
@@ -69,3 +69,26 @@ GRANT ALL PRIVILEGES ON TABLE trades TO postgres;
 GRANT ALL PRIVILEGES ON TABLE positions_pnl TO postgres;
 GRANT ALL PRIVILEGES ON TABLE forecasts TO postgres;
 GRANT ALL PRIVILEGES ON TABLE price_exposure TO postgres;
+
+-- Day-ahead and Real-time LMPs
+CREATE TABLE IF NOT EXISTS dayahead_prices (
+    ts TIMESTAMPTZ NOT NULL,
+    hub TEXT NOT NULL,
+    lmp_da DOUBLE PRECISION NOT NULL,
+    energy_da DOUBLE PRECISION NOT NULL,
+    congestion_da DOUBLE PRECISION NOT NULL,
+    loss_da DOUBLE PRECISION NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dayahead_hub_ts ON dayahead_prices(hub, ts);
+
+CREATE TABLE IF NOT EXISTS realtime_prices (
+    ts TIMESTAMPTZ NOT NULL,
+    hub TEXT NOT NULL,
+    lmp_rt DOUBLE PRECISION NOT NULL,
+    energy_rt DOUBLE PRECISION NOT NULL,
+    congestion_rt DOUBLE PRECISION NOT NULL,
+    loss_rt DOUBLE PRECISION NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_realtime_hub_ts ON realtime_prices(hub, ts);
+GRANT ALL PRIVILEGES ON TABLE dayahead_prices TO postgres;
+GRANT ALL PRIVILEGES ON TABLE realtime_prices TO postgres;

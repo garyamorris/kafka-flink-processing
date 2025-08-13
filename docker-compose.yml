@@ -28,6 +28,19 @@ services:
     networks:
       - flink-network
 
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.5.0
+    depends_on:
+      - kafka
+    environment:
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka:29092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+    ports:
+      - "8082:8081"  # expose as 8082 to avoid conflict with Flink UI
+    networks:
+      - flink-network
+
   postgres:
     image: postgres:15
     environment:
@@ -88,6 +101,15 @@ services:
 
   producer:
     build: ./producer
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_BROKER: kafka:29092
+    networks:
+      - flink-network
+
+  producer-da-rt:
+    build: ./producer-da-rt
     depends_on:
       - kafka
     environment:
