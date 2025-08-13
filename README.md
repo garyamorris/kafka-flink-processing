@@ -1,200 +1,152 @@
-# Kafka-Flink-PostgreSQL Real-Time Data Pipeline
+# Energy Trading Streaming (Kafka + Flink + Postgres)
 
-A complete proof-of-concept demonstrating a real-time data pipeline using Apache Kafka, Apache Flink, and PostgreSQL, all orchestrated with Docker Compose.
+A trading-centric streaming PoC that simulates energy hub price ticks and trades, then calculates per-account PnL and simple price forecasts in real time with Apache Flink. All services run via Docker Compose.
 
 ## Architecture
 
-- **Apache Kafka**: Message broker for streaming data
-- **Apache Flink**: Stream processing engine for real-time data transformation
-- **PostgreSQL**: Database for storing processed events
-- **Python Producer**: Generates continuous JSON messages every 200ms
-- **Flink Job**: Consumes Kafka messages and writes to PostgreSQL
+- Kafka: Streams two topics — `prices` ($/MWh) and `trades` (MW fills)
+- Flink: Stateful job that persists raw streams, computes SMA forecasts, and emits `positions_pnl`
+- Postgres: Stores `prices`, `trades`, `forecasts`, and `positions_pnl`
+- Python Producer: Generates diurnal energy price shapes and random trades across hubs/accounts
 
 ## Prerequisites
 
-- Docker and Docker Compose installed
-- Java 11+ (for building the Flink job locally, optional)
-- Maven 3.6+ (for building the Flink job locally, optional)
-- At least 4GB of available RAM
+- Docker and Docker Compose
+- ~4 GB RAM available
 
 ## Quick Start
 
-### 1. Build and Run Everything
-
 ```bash
-# Make build script executable
-chmod +x scripts/build.sh
+# Start everything
+docker compose up --build
 
-# Build the Flink job JAR
-./scripts/build.sh
-
-# Start all services
-docker-compose up --build
+# Flink UI
+# http://localhost:8081
 ```
 
-### 2. Verify the Pipeline
+The compose file builds and submits the Flink job automatically once Kafka/Postgres/Flink are ready. The Python producer then streams price ticks every ~200ms and occasional trades.
 
-The pipeline will automatically:
-1. Start all infrastructure services (Kafka, PostgreSQL, Flink)
-2. Create the Kafka topic `events`
-3. Initialize PostgreSQL with the `events` table
-4. Start the Python producer sending messages every 200ms
-5. Submit the Flink job to consume and process messages
-6. Write processed data to PostgreSQL
+## Data Model
 
-### 3. Check the Data Flow
+### Kafka topics (JSON)
 
-#### View Flink Dashboard
-Open http://localhost:8081 in your browser to see:
-- Running jobs
-- Task metrics
-- Throughput statistics
-
-#### Query PostgreSQL Data
-```bash
-# Connect to PostgreSQL
-docker exec -it kafka-flink-postgres-poc-postgres-1 psql -U postgres -d flinkdb
-
-# Query the events table
-SELECT * FROM events ORDER BY id DESC LIMIT 10;
-
-# Count total events
-SELECT COUNT(*) FROM events;
-
-# Exit PostgreSQL
-\q
+`prices`
+```json
+{ "ts": "2024-01-15T10:30:45.123Z", "hub": "PJM-WEST", "price_mwh": 47.12 }
 ```
 
-#### Monitor Kafka Messages
-```bash
-# View producer logs
-docker logs -f kafka-flink-postgres-poc-producer-1
-
-# Check Kafka topics
-docker exec -it kafka-flink-postgres-poc-kafka-1 kafka-topics --list --bootstrap-server localhost:9092
-```
-
-## Project Structure
-
-```
-kafka-flink-postgres-poc/
-├── docker-compose.yml          # Service orchestration
-├── producer/
-│   ├── Dockerfile              # Python producer container
-│   ├── producer.py             # Message generator
-│   └── requirements.txt        # Python dependencies
-├── flink-job/
-│   ├── Dockerfile              # Flink job builder container
-│   ├── pom.xml                 # Maven configuration
-│   └── src/main/java/com/example/
-│       └── KafkaToPostgresJob.java  # Stream processing logic
-├── postgres/
-│   └── init.sql                # Database initialization
-├── scripts/
-│   ├── build.sh                # JAR build script
-│   └── submit-job.sh           # Job submission script
-└── README.md
-```
-
-## Data Schema
-
-### Kafka Message Format (JSON)
+`trades`
 ```json
 {
-  "id": 1,
-  "ts": "2024-01-15T10:30:45.123456",
-  "value": 42.73
+  "trade_id": 123,
+  "ts": "2024-01-15T10:30:45.123Z",
+  "account": "ACC1",
+  "hub": "PJM-WEST",
+  "side": "BUY",
+  "mw": 25,
+  "price_mwh": 46.95
 }
 ```
 
-### PostgreSQL Table Schema
+### Postgres tables
+
+- `prices(ts TEXT, hub TEXT, price_mwh DOUBLE PRECISION)`
+- `trades(trade_id BIGINT, ts TEXT, account TEXT, hub TEXT, side TEXT, mw INT, price_mwh DOUBLE PRECISION)`
+- `forecasts(ts TEXT, hub TEXT, sma5 DOUBLE PRECISION, sma20 DOUBLE PRECISION, forecast_next DOUBLE PRECISION)`
+- `positions_pnl(ts TEXT, account TEXT, hub TEXT, position_mw INT, avg_price_mwh DOUBLE PRECISION, last_price_mwh DOUBLE PRECISION, realized_pnl DOUBLE PRECISION, unrealized_pnl DOUBLE PRECISION, total_pnl DOUBLE PRECISION)`
+
+Note: timestamps are stored as TEXT for simplicity. We can switch to `TIMESTAMPTZ` if needed.
+
+## How It Works
+
+- Producer (`producer/producer.py`):
+  - Hubs: PJM-WEST, ERCOT-HOUSTON, NYISO-ZONEJ, CAISO-NP15
+  - Simulates diurnal price patterns plus noise; emits `prices` and random `trades`
+- Flink job (`KafkaToPostgresJob`):
+  - Persists raw `prices`/`trades` to Postgres
+  - Forecasts: SMA(5/20) per hub on `price_mwh`, writes to `forecasts`
+  - PnL: Maintains per-account position (MW) and avg price ($/MWh) keyed by hub; emits `positions_pnl` on every price or trade
+
+## Inspecting Data
+
+Open the Flink UI at http://localhost:8081 to view job status, throughput, and operators.
+
+Query Postgres (inside the compose stack):
+```bash
+docker compose exec -u postgres postgres psql -U postgres -d flinkdb
+```
+
+Sample SQL:
 ```sql
-CREATE TABLE events (
-    id INT PRIMARY KEY,
-    ts TEXT NOT NULL,
-    value DOUBLE PRECISION NOT NULL
-);
+-- Latest prices by hub
+SELECT *
+FROM prices
+ORDER BY ts DESC
+LIMIT 8;
+
+-- Recent trades
+SELECT *
+FROM trades
+ORDER BY ts DESC
+LIMIT 10;
+
+-- Most recent PnL snapshot per account/hub
+SELECT DISTINCT ON (account, hub) *
+FROM positions_pnl
+ORDER BY account, hub, ts DESC;
+
+-- Forecast signals
+SELECT *
+FROM forecasts
+ORDER BY ts DESC, hub
+LIMIT 8;
+```
+
+Kafka tools:
+```bash
+# Producer logs
+docker compose logs -f producer
+
+# List topics from inside the Kafka container
+docker compose exec kafka kafka-topics --list --bootstrap-server kafka:29092
 ```
 
 ## Configuration
 
-### Modify Message Generation Rate
-Edit `producer/producer.py` line 61:
-```python
-time.sleep(0.2)  # Change from 200ms to desired interval
+- Producer pacing: edit `time.sleep(0.2)` in `producer/producer.py`
+- Flink parallelism/task slots: see `docker-compose.yml` under `taskmanager` environment
+- JDBC batch sizes: `KafkaToPostgresJob.java` (JdbcExecutionOptions)
+
+## Project Structure
+
 ```
-
-### Adjust Flink Parallelism
-Edit `docker-compose.yml`:
-```yaml
-environment:
-  - |
-    FLINK_PROPERTIES=
-    parallelism.default: 2  # Increase parallelism
-```
-
-### Change Batch Size
-Edit `flink-job/src/main/java/com/example/KafkaToPostgresJob.java`:
-```java
-.withBatchSize(100)  // Modify batch size
-.withBatchIntervalMs(200)  // Modify batch interval
-```
-
-## Stopping the Pipeline
-
-```bash
-# Stop all services
-docker-compose down
-
-# Stop and remove all data
-docker-compose down -v
+docker-compose.yml
+producer/
+  Dockerfile
+  producer.py
+  requirements.txt
+flink-job/
+  Dockerfile
+  pom.xml
+  src/main/java/com/example/KafkaToPostgresJob.java
+postgres/
+  init.sql
+scripts/
+  build.sh
+  submit-job.sh
+README.md
 ```
 
 ## Troubleshooting
 
-### Flink Job Not Starting
-- Check job submission logs: `docker logs kafka-flink-postgres-poc-flink-job-submitter-1`
-- Verify JobManager is ready: http://localhost:8081
+- Flink job not visible: wait for JobManager/TaskManager to register; check `docker compose logs flink-job-submitter`
+- No data in Postgres: check `docker compose logs producer` and Flink UI; confirm topics exist
+- Kafka CLI inside container: use `kafka:29092` as the bootstrap server
 
-### No Data in PostgreSQL
-- Verify producer is running: `docker logs kafka-flink-postgres-poc-producer-1`
-- Check Flink job status in dashboard
-- Ensure Kafka topic exists: `docker exec -it kafka-flink-postgres-poc-kafka-1 kafka-topics --list --bootstrap-server localhost:9092`
+## Next Ideas
 
-### Out of Memory Errors
-- Increase Docker memory allocation (Settings > Resources)
-- Reduce Flink task slots in docker-compose.yml
+- Use `TIMESTAMPTZ` and event time/watermarks
+- Add block trades with delivery windows and hourly settlement PnL
+- Basis and spread PnL between hubs
+- Strategy-driven trades (e.g., SMA crossovers) instead of random
 
-## Development
-
-### Building Flink Job Locally
-```bash
-cd flink-job
-mvn clean package
-```
-
-### Running Producer Locally
-```bash
-cd producer
-pip install -r requirements.txt
-KAFKA_BROKER=localhost:9092 python producer.py
-```
-
-## Performance Metrics
-
-- **Message Rate**: ~5 messages/second (configurable)
-- **Processing Latency**: < 100ms typical
-- **Throughput**: Handles 1000s of messages/second with proper scaling
-
-## Technologies Used
-
-- Apache Kafka 7.5.0
-- Apache Flink 1.19
-- PostgreSQL 15
-- Python 3.9
-- Java 11
-- Docker Compose 3.8
-
-## License
-
-This is a proof-of-concept project for educational purposes.
