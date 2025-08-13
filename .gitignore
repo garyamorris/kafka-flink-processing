@@ -1,0 +1,33 @@
+# General
+.DS_Store
+Thumbs.db
+.env
+*.log
+logs/
+
+# IDEs / Editors
+.idea/
+.vscode/
+*.iml
+
+# Java / Maven
+target/
+.classpath
+.project
+.settings/
+.factorypath
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+venv/
+.venv/
+
+# Docker
+*.pid
+*.pid.lock
+
